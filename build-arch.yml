@@ -1,0 +1,86 @@
+name: Build Nettool on Arch Linux
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Update Arch package database and install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed
+          pacman -S --noconfirm --needed \
+            base-devel \
+            cmake \
+            qt6-base \
+            iputils \
+            curl \
+            openssl
+
+      - name: Extract Nettool release archive if needed
+        shell: bash
+        run: |
+          if [[ ! -f CMakeLists.txt ]]; then
+            archive="$(find . -maxdepth 2 -type f -name 'nettool-3.0.0.tar.gz' -print -quit)"
+            if [[ -z "$archive" ]]; then
+              echo "CMakeLists.txt was not found and nettool-3.0.0.tar.gz is missing."
+              echo "Commit the source tree to the repository or add the release archive."
+              exit 1
+            fi
+            tar -xzf "$archive"
+            source_dir="$(find . -mindepth 1 -maxdepth 2 -type f -name CMakeLists.txt -printf '%h\n' -quit)"
+            if [[ -z "$source_dir" ]]; then
+              echo "Could not find CMakeLists.txt after extracting the archive."
+              exit 1
+            fi
+            echo "NETTOOL_SOURCE_DIR=$source_dir" >> "$GITHUB_ENV"
+          else
+            echo "NETTOOL_SOURCE_DIR=." >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure CMake
+        run: cmake -B build -S "${NETTOOL_SOURCE_DIR:-.}" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compile
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Run tests when configured
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Launch GUI smoke check
+        shell: bash
+        run: |
+          if [[ -x build/nettool-gui ]]; then
+            echo "Qt GUI binary built successfully."
+            file build/nettool-gui
+          else
+            echo "Expected build/nettool-gui was not produced."
+            echo "Available build outputs:"
+            find build -maxdepth 3 -type f -executable -print
+            exit 1
+          fi
+
+      - name: Upload compiled binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: nettool-3.0.0-arch-linux
+          path: |
+            build/nettool-cli
+            build/nettool-gui
+          if-no-files-found: warn
+          retention-days: 14
