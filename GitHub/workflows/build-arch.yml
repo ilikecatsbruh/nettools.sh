@@ -1,0 +1,104 @@
+name: Build Nettool Qt6
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed
+          pacman -S --noconfirm --needed \
+            base-devel \
+            cmake \
+            qt6-base \
+            iputils \
+            curl \
+            openssl \
+            tar \
+            findutils
+
+      - name: Extract tarball
+        shell: bash
+        run: |
+          ARCHIVE="nettool-3.0.0.tar.gz"
+
+          if [[ ! -f "$ARCHIVE" ]]; then
+            echo "::error::Missing $ARCHIVE in repository root"
+            exit 1
+          fi
+
+          mkdir -p source
+          tar -xzf "$ARCHIVE" -C source
+
+          CMAKE_FILE="$(find source -type f -name CMakeLists.txt -print -quit)"
+
+          if [[ -z "$CMAKE_FILE" ]]; then
+            echo "::error::No CMakeLists.txt found in archive"
+            exit 1
+          fi
+
+          SOURCE_DIR="$(dirname "$CMAKE_FILE")"
+          echo "NETTOOL_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+
+          echo "Source directory: $SOURCE_DIR"
+
+      - name: Configure CMake
+        run: |
+          cmake \
+            -S "$NETTOOL_SOURCE_DIR" \
+            -B "$NETTOOL_SOURCE_DIR/build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNETTOOL_GUI=ON
+
+      - name: Compile CLI and Qt6 GUI
+        run: |
+          cmake --build "$NETTOOL_SOURCE_DIR/build" \
+            --parallel "$(nproc)"
+
+      - name: Run tests
+        run: |
+          ctest \
+            --test-dir "$NETTOOL_SOURCE_DIR/build" \
+            --output-on-failure
+
+      - name: Verify GUI executable
+        shell: bash
+        run: |
+          GUI="$(find "$NETTOOL_SOURCE_DIR/build" \
+            -type f -name 'nettool-gui' -perm /111 -print -quit)"
+
+          if [[ -z "$GUI" ]]; then
+            echo "::error::nettool-gui was not produced"
+            find "$NETTOOL_SOURCE_DIR/build" -type f -perm /111 -print
+            exit 1
+          fi
+
+          echo "GUI built successfully: $GUI"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: nettool-linux-qt6
+          path: |
+            ${{ env.NETTOOL_SOURCE_DIR }}/build/nettool-cli
+            ${{ env.NETTOOL_SOURCE_DIR }}/build/nettool-gui
+          if-no-files-found: warn
+          retention-days: 14
