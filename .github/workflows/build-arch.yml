@@ -1,4 +1,4 @@
-name: Nettool release builds
+name: Nettool executable builds
 
 on:
   push:
@@ -12,115 +12,65 @@ permissions:
   contents: read
 
 jobs:
-  deb:
-    name: Build Debian package
+  build-linux:
+    name: Extract ZIP and build Linux executables
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Extract source archive
-        run: |
-          test -f nettool.zip || { echo "::error::nettool.zip is missing from repository root"; exit 1; }
-          mkdir source
-          unzip -q nettool.zip -d source
-          SRC="$(find source -name CMakeLists.txt -print -quit | xargs dirname)"
-          echo "SRC=$SRC" >> "$GITHUB_ENV"
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake qt6-base-dev dpkg-dev
-      - name: Build and package
-        run: |
-          cmake -S "$SRC" -B build -DCMAKE_BUILD_TYPE=Release -DNETTOOL_GUI=ON
-          cmake --build build --parallel
-          ctest --test-dir build --output-on-failure
-          DESTDIR="$PWD/pkgroot" cmake --install build --prefix /usr
-          mkdir -p pkgroot/DEBIAN
-          cat > pkgroot/DEBIAN/control <<'EOF'
-          Package: nettool
-          Version: 3.0.0
-          Section: net
-          Priority: optional
-          Architecture: amd64
-          Depends: libc6, libstdc++6, libqt6widgets6
-          Maintainer: Nettool contributors
-          Description: Nettool network toolkit
-           Qt6 desktop interface and command-line network toolkit.
-          EOF
-          dpkg-deb --build pkgroot nettool_3.0.0_amd64.deb
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nettool-deb
-          path: nettool_3.0.0_amd64.deb
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-  rpm:
-    name: Build Fedora RPM
-    runs-on: ubuntu-24.04
-    container:
-      image: fedora:latest
-      options: --user root
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: dnf install -y cmake gcc-c++ make qt6-qtbase-devel rpm-build unzip findutils
-      - name: Extract, build and package
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake unzip qt6-base-dev
+
+      - name: Extract source ZIP
         shell: bash
         run: |
-          test -f nettool.zip || { echo "::error::nettool.zip is missing from repository root"; exit 1; }
-          mkdir source
-          unzip -q nettool.zip -d source
-          SRC="$(find source -name CMakeLists.txt -print -quit | xargs dirname)"
-          cmake -S "$SRC" -B build -DCMAKE_BUILD_TYPE=Release -DNETTOOL_GUI=ON
-          cmake --build build --parallel
-          ctest --test-dir build --output-on-failure
-          mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          cat > rpmbuild/SPECS/nettool.spec <<'EOF'
-          Name: nettool
-          Version: 3.0.0
-          Release: 1%{?dist}
-          Summary: Nettool network toolkit
-          License: MIT
-          BuildArch: x86_64
-          Requires: qt6-qtbase
-          %description
-          Qt6 desktop interface and command-line network toolkit.
-          %install
-          rm -rf %{buildroot}
-          DESTDIR=%{buildroot} cmake --install build --prefix /usr
-          %files
-          /usr/bin/nettool-cli
-          /usr/bin/nettool-gui
-          /usr/share/applications/nettool.desktop
-          EOF
-          rpmbuild --define "_topdir $PWD/rpmbuild" -bb rpmbuild/SPECS/nettool.spec
-          cp rpmbuild/RPMS/*/*.rpm .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nettool-rpm
-          path: "*.rpm"
+          ARCHIVE="nettool-source-only.zip"
+          if [[ ! -f "$ARCHIVE" ]]; then
+            echo "::error::Missing $ARCHIVE in the repository root."
+            echo "Commit the source ZIP to the repository, then rerun this workflow."
+            exit 1
+          fi
 
-  windows:
-    name: Build Windows executable
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Extract source archive
-        shell: pwsh
+          mkdir -p source
+          unzip -oq "$ARCHIVE" -d source
+
+          CMAKE_FILE="$(find source -type f -name CMakeLists.txt -print -quit)"
+          if [[ -z "$CMAKE_FILE" ]]; then
+            echo "::error::CMakeLists.txt was not found inside $ARCHIVE"
+            exit 1
+          fi
+
+          SRC_DIR="$(dirname "$CMAKE_FILE")"
+          echo "NETTOOL_SOURCE_DIR=$SRC_DIR" >> "$GITHUB_ENV"
+          echo "Extracted source into: $SRC_DIR"
+
+      - name: Configure
         run: |
-          if (!(Test-Path nettool.zip)) { throw "nettool.zip is missing from repository root" }
-          Expand-Archive nettool.zip source
-          $cmakeFile = Get-ChildItem source -Filter CMakeLists.txt -Recurse | Select-Object -First 1
-          if (!$cmakeFile) { throw "CMakeLists.txt not found in archive" }
-          "SRC=$($cmakeFile.Directory.FullName)" >> $env:GITHUB_ENV
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.3'
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_64
-      - name: Configure and build
+          cmake -S "$NETTOOL_SOURCE_DIR" -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNETTOOL_GUI=ON
+
+      - name: Compile CLI and GUI executables
+        run: cmake --build build --parallel
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Verify executables
         run: |
-          cmake -S "$env:SRC" -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release --parallel
-      - uses: actions/upload-artifact@v4
+          test -x build/nettool-cli
+          test -x build/nettool-gui
+          file build/nettool-cli build/nettool-gui
+
+      - name: Upload executables
+        uses: actions/upload-artifact@v4
         with:
-          name: nettool-windows-exe
-          path: build/Release/*.exe
+          name: nettool-linux-x86_64
+          path: |
+            build/nettool-cli
+            build/nettool-gui
+          if-no-files-found: error
