@@ -25,13 +25,13 @@ jobs:
           sudo apt-get install -y \
             build-essential cmake unzip qt6-base-dev
 
-      - name: Extract source ZIP
+      - name: Extract uploaded source ZIP
         shell: bash
         run: |
-          ARCHIVE="nettool-source-only.zip"
+          ARCHIVE="nettool-3.0.0 (1).zip"
           if [[ ! -f "$ARCHIVE" ]]; then
             echo "::error::Missing $ARCHIVE in the repository root."
-            echo "Commit the source ZIP to the repository, then rerun this workflow."
+            echo "Upload this ZIP to the repository root, then rerun this workflow."
             exit 1
           fi
 
